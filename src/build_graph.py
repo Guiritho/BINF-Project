@@ -1,4 +1,7 @@
 import sys
+import numpy as np
+from scipy.stats import linregress
+from csv_utils import build_output_path, read_matrix_csv, write_matrix_only_csv
 
 
 def compute_correlation_adjacency(data):
@@ -16,11 +19,14 @@ def compute_correlation_adjacency(data):
 
         a_{i,j} = corr_{i,j}+1 / 2.
     """
-    pass
+    correlation = np.corrcoef(data, rowvar=False)
+    adjacency = (correlation + 1) / 2
+
+    return correlation, adjacency
 
 
 def compute_connectivity(alpha):
-    """Palier 2, Étape 2 : Détermination du seuil mou β Plutôt que de biner la matrice de
+    """Palier 2, Étape 2, point 1 : Détermination du seuil mou β Plutôt que de biner la matrice de
     corrélation, on va utiliser un seuil "mou" β et définir une nouvelle matrice α :
 
         α_{i,j} = (a_{i,j})^β.
@@ -38,7 +44,9 @@ def compute_connectivity(alpha):
 
         c_{i} = Σ_{j=0}^{N-1} α_{i,j}
     """
-    pass
+    connectivity = alpha.sum(axis=1)
+
+    return connectivity
 
 
 def compute_power_law_r_squared(connectivity, gene_count):
@@ -57,14 +65,51 @@ def compute_power_law_r_squared(connectivity, gene_count):
     ne nous intéressent pas, ce qu'on veut c'est récupérer le coefficient de détermination
     associé à cette valeur de β : R²_{β}.
     """
-    pass
+    # 2
+    gene_count_sqrt = np.sqrt(gene_count)
+    gene_count_sqrt_ceiled = np.ceil(gene_count_sqrt)
+    bin_count = int(gene_count_sqrt_ceiled)
+    counts, edges = np.histogram(connectivity, bins=bin_count)
+
+    # 3
+    centers = (edges[:-1] + edges[1:]) / 2
+
+    # 4
+    non_empty_bins = counts > 0
+    counts = counts[non_empty_bins]
+    centers = centers[non_empty_bins]
+
+    # 5
+    log_centers = np.log10(centers)
+    log_counts = np.log10(counts)
+    regression = linregress(log_centers, log_counts)
+
+    # 6
+    r_squared = regression.rvalue ** 2
+
+    return r_squared
 
 
 def find_optimal_beta(adjacency, gene_count):
     """Palier 2, Étape 2, point 7 : Répéter ces étapes pour toutes les valeurs entières
     0 < β <= 30 et retourner la plus petite valeur de β tel que R²_{β} > 0.8.
     """
-    pass
+    min_beta = 1
+    max_beta = 30
+    beta_upper_bound = max_beta + 1
+    for beta in range(min_beta, beta_upper_bound):
+        # On récupère la connectivité (point 1)
+        alpha = adjacency ** beta
+        connectivity = compute_connectivity(alpha)
+
+        # On récupère un nouveau beta (points 2 à 6)
+        r_squared = compute_power_law_r_squared(connectivity, gene_count)
+        r_squared_threshold = 0.8
+
+        if r_squared > r_squared_threshold:
+            return beta
+
+    return max_beta
 
 
 def compute_link_overlap(alpha_tilde):
@@ -78,7 +123,28 @@ def compute_link_overlap(alpha_tilde):
     avec |.| la valeur absolue, α^{~}_{i,j} = α_{i,j} x sign(corr_{i,j}) et sign la fonction
     donnant le signe.
     """
-    pass
+    # Somme de tous les u (u=i et u=j inclus)
+    # Σ_{u=0}^{N-1} α^{~}_{i,u} x α^{~}_{u,j}
+    full_sum = alpha_tilde @ alpha_tilde
+
+    # Les deux termes à retirer
+    # u=i (α^{~}_{i,i} x α^{~}_{i,j})
+    # u=j (α^{~}_{i,j} x α^{~}_{j,j})
+    diagonal = np.diag(alpha_tilde)
+    self_terms = alpha_tilde * (diagonal[:, None] + diagonal[None, :])
+
+    # Sur la diagonale (i=j), u=i et u=j sont le même terme
+    # du coup ça veut dire que self_terms le compte deux fois
+    # donc on soustrait α^{~}_{i,i}^2 une fois pour le retirer une fois
+    squared_diagonal = diagonal ** 2
+    diagonal_correction = np.diag(squared_diagonal)
+    self_terms -= diagonal_correction
+
+    # On retire tous les termes u=i et u=j
+    # Σ_{u!=i,j} α^{~}_{i,u} x α^{~}_{u,j}
+    link_overlap = full_sum - self_terms
+
+    return link_overlap
 
 
 def compute_tom(adjacency, correlation, beta):
@@ -92,21 +158,69 @@ def compute_tom(adjacency, correlation, beta):
     avec |.| la valeur absolue, α^{~}_{i,j} = α_{i,j} x sign(corr_{i,j}) et sign la fonction
     donnant le signe.
     """
-    pass
+    # α_{i,j}
+    alpha = adjacency ** beta
+
+    # α^{~}_{i,j} = α_{i,j} x sign(corr_{i,j})
+    alpha_tilde = alpha * np.sign(correlation)
+
+    # c_{i} et c_{j}
+    connectivity = compute_connectivity(alpha)
+
+    # Σ_{u!=i,j} α^{~}_{i,u} x α^{~}_{u,j}
+    link_overlap = compute_link_overlap(alpha_tilde)
+
+    # min(c_{i}, c_{j}
+    min_connectivity = np.minimum.outer(connectivity, connectivity)
+
+    # α_{i,j} + Σ_{u!=i,j} α^{~}_{i,u} x α^{~}_{u,j}
+    alpha_plus_overlap = alpha + link_overlap
+
+    # |α_{i,j} + Σ_{u!=i,j} α^{~}_{i,u} x α^{~}_{u,j}|
+    numerator = np.abs(alpha_plus_overlap)
+
+    # |α_{i,j}|
+    alpha_abs = np.abs(alpha)
+
+    # min(c_{i}, c_{j}) + 1 - |α_{i,j}|
+    denominator = min_connectivity + 1 - alpha_abs
+
+    # t_{i,j} = |α_{i,j} + Σ_{u!=i,j} α^{~}_{i,u} x α^{~}_{u,j}|
+    #           / (min(c_{i}, c_{j}) + 1 - |α_{i,j}|)
+    tom = numerator / denominator
+
+    return tom
 
 
 def run_pow(datadir, dataname):
     """Palier 2 : POW : le programme ne prend pas d'autre paramètre et affiche sur la sortie
     standard valeur opitmale de β calculée (cf ci-dessous).
     """
-    pass
+    input_path = build_output_path(datadir, dataname)
+    _, _, data = read_matrix_csv(input_path)
+    gene_count = data.shape[1]
+
+    _, adjacency = compute_correlation_adjacency(data)
+    beta = find_optimal_beta(adjacency, gene_count)
+
+    print(beta)
 
 
 def run_tom(datadir, dataname, beta):
     """Palier 2 : TOM : le programme utilise aussi le paramètre beta et calcule la matrice
     TOM basée sur celui-ci (cf. ci-dessous).
     """
-    pass
+    input_path = build_output_path(datadir, dataname)
+    _, _, data = read_matrix_csv(input_path)
+
+    correlation, adjacency = compute_correlation_adjacency(data)
+    tom = compute_tom(adjacency, correlation, beta)
+
+    output_filename = f"{dataname}_TOM_{beta}.csv"
+    output_path = build_output_path(datadir, output_filename)
+    output_decimals = 5
+
+    write_matrix_only_csv(output_path, tom, output_decimals)
 
 
 def main():
@@ -120,9 +234,10 @@ def main():
     datadir = sys.argv[1]
     dataname = sys.argv[2]
     option = sys.argv[3]
+    is_tom_option = option == "TOM"
     has_beta_argument = len(sys.argv) > 4
 
-    if option == "TOM" and has_beta_argument:
+    if is_tom_option and has_beta_argument:
         beta = int(sys.argv[4])
         run_tom(datadir, dataname, beta)
     else:
