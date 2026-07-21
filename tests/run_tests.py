@@ -15,7 +15,7 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SRC_DIR = PROJECT_ROOT / "src"
-DEFAULT_TESTS_DIR = PROJECT_ROOT / "data" / "tests" / "230626_current"
+DEFAULT_TESTS_DIR = PROJECT_ROOT / "data" / "tests" / "190727_current"
 
 SUBPROCESS_TIMEOUT_SECONDS = 300
 CLEANED_TOLERANCE = 1e-4
@@ -38,7 +38,6 @@ STATUS_COLORS = {
     "ERROR": COLOR_RED,
     "SKIP": COLOR_YELLOW,
 }
-
 STATUS_LABEL_WIDTH = 5
 PROGRESS_BAR_WIDTH = 30
 FALLBACK_TERMINAL_WIDTH = 100
@@ -49,6 +48,7 @@ GENE_COUNTS = [50, 100, 250, 500, 750, 1000]
 STATIC_L_VALUES = [0.6, 0.9]
 TAU_VALUES = [1, 15, 30]
 ADAPTIVE_AND_DYNAMIC_OPTIONS = ["adaptive", "dynamic"]
+CUT_OPTIONS = ["static"] + ADAPTIVE_AND_DYNAMIC_OPTIONS
 
 EXPECTED_BETA = {
     ("small", 50): 13, ("small", 100): 11, ("small", 250): 12,
@@ -85,6 +85,7 @@ class TestContext:
     verbose: bool
     use_color: bool
     is_tty: bool
+    cut_options: list
 
 
 # --- Generic helpers --------------------------------------------------------
@@ -256,7 +257,7 @@ def run_clean_dataset_tests(context, dataset_params):
         yield timed(check_clean_dataset, context, dataset, gene_count)
 
 
-def count_clean_dataset_tests(dataset_params):
+def count_clean_dataset_tests(context, dataset_params):
     return len(dataset_params)
 
 
@@ -312,7 +313,7 @@ def run_build_graph_tom_tests(context, dataset_params):
         yield timed(check_build_graph_tom, context, dataset, gene_count, beta)
 
 
-def count_build_graph_tests(dataset_params):
+def count_build_graph_tests(context, dataset_params):
     return len(dataset_params)
 
 
@@ -322,19 +323,19 @@ def build_find_modules_command(tom_name, option, tau, l_value):
     """Return (program_args, produced_filename, reference_filename, test_name).
 
     produced_filename follows the subject literally (no "_groups_"); the
-    downloaded reference files in data/tests/ still use the old
-    "_groups_..." name (a bug in the reference generator, acknowledged by
-    the teacher on Discord on 2026-07-14) - same content, different name.
+    downloaded reference files now use the same convention, since the
+    reference generator bug was fixed (cf divergence 2 in
+    divergences_sujet_vs_tests.md).
     """
     if option == "static":
         program_args = [tom_name, "static", str(tau), str(l_value)]
         produced_filename = f"{tom_name}_static_{l_value}_{tau}.csv"
-        reference_filename = f"{tom_name}_groups_static_{l_value}_{tau}.csv"
+        reference_filename = produced_filename
         test_name = f"find_modules {tom_name} static l={l_value} tau={tau}"
     else:
         program_args = [tom_name, option, str(tau)]
         produced_filename = f"{tom_name}_{option}_{tau}.csv"
-        reference_filename = f"{tom_name}_groups_{option}_{tau}.csv"
+        reference_filename = produced_filename
         test_name = f"find_modules {tom_name} {option} tau={tau}"
 
     return program_args, produced_filename, reference_filename, test_name
@@ -367,14 +368,19 @@ def run_find_modules_tests(context, dataset_params):
     for dataset, gene_count, beta in dataset_params:
         tom_name = f"mrna2_{dataset}.csv_cleaned_{gene_count}.csv_TOM_{beta}.csv"
         for tau in TAU_VALUES:
-            for l_value in STATIC_L_VALUES:
-                yield timed(check_find_modules, context, tom_name, "static", tau, l_value)
+            if "static" in context.cut_options:
+                for l_value in STATIC_L_VALUES:
+                    yield timed(check_find_modules, context, tom_name, "static", tau, l_value)
             for option in ADAPTIVE_AND_DYNAMIC_OPTIONS:
-                yield timed(check_find_modules, context, tom_name, option, tau, None)
+                if option in context.cut_options:
+                    yield timed(check_find_modules, context, tom_name, option, tau, None)
 
 
-def count_find_modules_tests(dataset_params):
-    combinations_per_tom = len(STATIC_L_VALUES) + len(ADAPTIVE_AND_DYNAMIC_OPTIONS)
+def count_find_modules_tests(context, dataset_params):
+    static_combinations = len(STATIC_L_VALUES) if "static" in context.cut_options else 0
+    other_combinations = len([option for option in ADAPTIVE_AND_DYNAMIC_OPTIONS if option in context.cut_options])
+    combinations_per_tom = static_combinations + other_combinations
+
     return len(dataset_params) * len(TAU_VALUES) * combinations_per_tom
 
 
@@ -407,16 +413,21 @@ def run_extract_eigen_tests(context, dataset_params):
         cleaned_name = f"mrna2_{dataset}.csv_cleaned_{gene_count}.csv"
         tom_name = f"{cleaned_name}_TOM_{beta}.csv"
         for tau in TAU_VALUES:
-            for l_value in STATIC_L_VALUES:
-                group_name = f"{tom_name}_groups_static_{l_value}_{tau}.csv"
-                yield timed(check_extract_eigen, context, cleaned_name, group_name)
+            if "static" in context.cut_options:
+                for l_value in STATIC_L_VALUES:
+                    group_name = f"{tom_name}_static_{l_value}_{tau}.csv"
+                    yield timed(check_extract_eigen, context, cleaned_name, group_name)
             for option in ADAPTIVE_AND_DYNAMIC_OPTIONS:
-                group_name = f"{tom_name}_groups_{option}_{tau}.csv"
-                yield timed(check_extract_eigen, context, cleaned_name, group_name)
+                if option in context.cut_options:
+                    group_name = f"{tom_name}_{option}_{tau}.csv"
+                    yield timed(check_extract_eigen, context, cleaned_name, group_name)
 
 
-def count_extract_eigen_tests(dataset_params):
-    combinations_per_tom = len(STATIC_L_VALUES) + len(ADAPTIVE_AND_DYNAMIC_OPTIONS)
+def count_extract_eigen_tests(context, dataset_params):
+    static_combinations = len(STATIC_L_VALUES) if "static" in context.cut_options else 0
+    other_combinations = len([option for option in ADAPTIVE_AND_DYNAMIC_OPTIONS if option in context.cut_options])
+    combinations_per_tom = static_combinations + other_combinations
+
     return len(dataset_params) * len(TAU_VALUES) * combinations_per_tom
 
 
@@ -513,7 +524,7 @@ def print_outcomes(label, runner, counter, context, dataset_params):
     title = colorize(f"=== {label} ===", COLOR_BOLD + COLOR_CYAN, context.use_color)
     print(f"\n{title}")
 
-    total = counter(dataset_params)
+    total = counter(context, dataset_params)
     show_progress_bar = context.is_tty and not context.verbose
     counts = {status: 0 for status in TestStatus}
 
@@ -550,6 +561,10 @@ def parse_args():
     parser.add_argument("--palier", type=int, choices=[1, 2, 3, 4], help="only run this palier")
     parser.add_argument("--datasets", nargs="+", choices=DATASETS, default=DATASETS)
     parser.add_argument("--gene-counts", nargs="+", type=int, choices=GENE_COUNTS, default=GENE_COUNTS)
+    parser.add_argument(
+        "--options", nargs="+", choices=CUT_OPTIONS, default=CUT_OPTIONS,
+        help="only run these find_modules/extract_eigen cut options (palier 3 and 4)",
+    )
     parser.add_argument("--quick", action="store_true", help="shortcut for --datasets small --gene-counts 50")
     parser.add_argument("--verbose", action="store_true", help="print PASS results too")
     parser.add_argument("--no-color", action="store_true", help="disable colored output")
@@ -567,7 +582,7 @@ def main():
     use_color = is_tty and not args.no_color
     context = TestContext(
         src_dir=args.src, tests_dir=args.tests, timeout=SUBPROCESS_TIMEOUT_SECONDS,
-        verbose=args.verbose, use_color=use_color, is_tty=is_tty,
+        verbose=args.verbose, use_color=use_color, is_tty=is_tty, cut_options=args.options,
     )
     dataset_params = filtered_dataset_params(args.datasets, args.gene_counts)
 
