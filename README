@@ -1,10 +1,39 @@
-# BINF-Project
-Implementation of a method for reconstructing genetic regulatory networks called Weighted Genetic Network Analysis (WGCNA).
+# Dépendances
+
+python 3.13.13
+numpy 2.2.6
+scipy 1.17.1
 
 # Utilisation
 
-...
+`python src/<palier>.py`
 
-### Nom de l'archive de rendu
+### Palier 1 - src/clean_dataset.py
+```py
+python3 src/clean_dataset.py <datadir> <dataname> <K>
+	# Sortie : datadir/<dataname>_cleaned_<K>.csv
+```
 
-Le rendu est un fichier zip nommé `projet_binf_morin_thoreton.tar.bz2` contenant le code source et le rapport.
+### Palier 2 - src/build_graph.py
+```py
+python3 src/build_graph.py <datadir> <dataname> POW
+	# Sortie : affiche beta
+python3 src/build_graph.py <datadir> <dataname> TOM <beta>
+	# Sortie : datadir/<dataname>_TOM_<beta>.csv
+```
+
+### Palier 3 - src/find_modules.py
+```py
+python3 src/find_modules.py <datadir> <dataname> static <tau> <l>
+	# Sortie : datadir/<dataname>_static_<l>_<tau>.csv
+python3 src/find_modules.py <datadir> <dataname> adaptive <tau>
+	# Sortie : datadir/<dataname>_adaptive_<tau>.csv
+python3 src/find_modules.py <datadir> <dataname> dynamic <tau>
+	# Sortie : datadir/<dataname>_dynamic_<tau>.csv
+```
+
+### Palier 4 - src/extract_eigen.py
+```py
+python3 src/extract_eigen.py <datadir> <dataname> <groupname>
+	# Sortie : datadir/<groupname>_eigen.csv
+```
